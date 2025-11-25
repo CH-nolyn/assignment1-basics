@@ -4,6 +4,9 @@ import os
 from collections.abc import Iterable
 from typing import IO, Any, BinaryIO
 
+import re, collections
+from tests.common import gpt2_bytes_to_unicode
+
 import numpy.typing as npt
 import torch
 from jaxtyping import Bool, Float, Int
@@ -589,4 +592,72 @@ def run_train_bpe(
                 representing that <token1> was merged with <token2>.
                 Merges are ordered by order of creation.
     """
-    raise NotImplementedError
+    # 获取 GPT-2 字节到 Unicode 的映射
+    byte_to_unicode = gpt2_bytes_to_unicode()
+    # 构建反向映射：Unicode 字符 -> 字节值
+    unicode_to_byte = {v: k for k, v in byte_to_unicode.items()}
+
+    def token_str_to_bytes(token_str: str) -> bytes:
+        """将 GPT-2 编码的字符串 token 转换为 bytes"""
+        return bytes([unicode_to_byte[char] for char in token_str])
+
+    # 读取文本
+    # 按空格分词
+    vocab = collections.defaultdict(int)
+    try:
+        with open(input_path, "r", encoding="utf-8", errors="ignore") as f:
+            # text = f.read() # 一次性读取文本内容, 文本内容量较少
+            for line in f:
+                words = line.strip().split()
+                for word in words:
+                    # vocab[word] += 1  这是词级，不符合bpe
+                    vocab[''.join(list(word))+ ' </w>']  +=  1 # 注意空格' </w>'，BPE要求
+    except FileNotFoundError:
+        raise FileNotFoundError(f"File not found: {input_path}")
+    
+    print("vocab: ", vocab)
+
+    # 合并pairs
+    def merge_vocab(pair, v_in):
+        """将 pair 合并到词表 v_in 中"""
+        v_out = {}
+        bigram = re.escape(' '.join(pair))
+        p = re.compile(r'(?<!\S)' + bigram + r'(?!\S)')
+        for word in v_in:
+            w_out = p.sub(''.join(pair), word)
+            v_out[w_out] = v_in[word]
+        return v_out
+
+    # BPE迭代合并 
+    num_merges = 10
+    merges = []  # 在循环外初始化
+    for i in range(num_merges):
+        pairs = collections.defaultdict(int)
+        for word, freq in vocab.items():
+            symbols = word.split(' ')
+            for i in range(len(symbols)-1):
+                pairs[symbols[i], symbols[i+1]] += freq
+        if not pairs:
+            print("No more pairs to merge!")
+            break
+        # 找到最高频的 pair
+        best_pair = max(pairs, key=pairs.get)
+        merges.append(best_pair)
+        vocab = merge_vocab(best_pair, vocab)
+        '''
+        print(f"Merged {best_pair} in step {i+1}")
+        print("vocab: ", vocab)
+        print("pairs: ", pairs)
+        print("best_pair: ", best_pair)
+        print("--------------------------------")
+        print("--------------------------------")
+        '''
+   
+
+    # 3. 最终结果
+    print("\nFinal vocab after BPE:")
+    # for word, freq in vocab.items():
+        # print(f"{word}: {freq}")
+
+   # raise NotImplementedError
+

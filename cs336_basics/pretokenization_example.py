@@ -1,5 +1,6 @@
 import os
 from typing import BinaryIO
+from pathlib import Path
 
 
 def find_chunk_boundaries(
@@ -49,14 +50,34 @@ def find_chunk_boundaries(
     return sorted(set(chunk_boundaries))
 
 
-## Usage
-with open(..., "rb") as f:
-    num_processes = 4
-    boundaries = find_chunk_boundaries(f, num_processes, b"<|endoftext|>")
-
-    # The following is a serial implementation, but you can parallelize this
-    # by sending each start/end pair to a set of processes.
-    for start, end in zip(boundaries[:-1], boundaries[1:]):
-        f.seek(start)
-        chunk = f.read(end - start).decode("utf-8", errors="ignore")
-        # Run pre-tokenization on your chunk and store the counts for each pre-token
+## Usage Example
+if __name__ == "__main__":
+    # 使用相对路径找到测试文件
+    # 从 cs336_basics/ 目录到 tests/fixtures/ 的路径
+    file_path = Path(__file__).parent.parent / "tests" / "fixtures" / "tinystories_sample_5M.txt"
+    
+    if not file_path.exists():
+        print(f"错误: 文件不存在: {file_path}")
+        print("请确保在项目根目录运行此脚本")
+    else:
+        print(f"处理文件: {file_path}")
+        print(f"文件大小: {file_path.stat().st_size:,} 字节\n")
+        
+        with open(file_path, "rb") as f:
+            num_processes = 4
+            boundaries = find_chunk_boundaries(f, num_processes, b"<|endoftext|>")
+            
+            print(f"找到 {len(boundaries)} 个边界: {boundaries}\n")
+            
+            # The following is a serial implementation, but you can parallelize this
+            # by sending each start/end pair to a set of processes.
+            for i, (start, end) in enumerate(zip(boundaries[:-1], boundaries[1:]), 1):
+                f.seek(start)
+                chunk = f.read(end - start)
+                chunk_text = chunk.decode("utf-8", errors="ignore")
+                
+                print(f"块 {i}: 位置 {start:,} - {end:,} ({len(chunk):,} 字节)")
+                print(f"  开头: {chunk_text[:50].replace(chr(10), '\\n')}...")
+                print(f"  结尾: ...{chunk_text[-50:].replace(chr(10), '\\n')}")
+                # Run pre-tokenization on your chunk and store the counts for each pre-token
+                print()
