@@ -629,14 +629,21 @@ def run_train_bpe(
         return v_out
 
     # BPE迭代合并 
-    num_merges = 10
+    # 计算需要合并的次数：vocab_size - 初始token数(256字节 + 特殊token)
+    initial_vocab_size = 256 + len(special_tokens)
+    num_merges = vocab_size - initial_vocab_size
+    if num_merges <= 0:
+        num_merges = 0
+    
     merges = []  # 在循环外初始化
     for i in range(num_merges):
         pairs = collections.defaultdict(int)
         for word, freq in vocab.items():
             symbols = word.split(' ')
-            for i in range(len(symbols)-1):
-                pairs[symbols[i], symbols[i+1]] += freq
+            for j in range(len(symbols)-1):  
+                if symbols[j] == '</w>' or symbols[j+1] == '</w>':
+                    continue
+                pairs[symbols[j], symbols[j+1]] += freq
         if not pairs:
             print("No more pairs to merge!")
             break
@@ -652,12 +659,66 @@ def run_train_bpe(
         print("--------------------------------")
         print("--------------------------------")
         '''
-   
 
     # 3. 最终结果
     print("\nFinal vocab after BPE:")
     # for word, freq in vocab.items():
         # print(f"{word}: {freq}")
 
-   # raise NotImplementedError
+    # 构建最终返回格式
+    final_vocab = {}
+    token_id = 0
+
+    # 1. 添加特殊token
+    for special_token in special_tokens:
+        final_vocab[token_id] = special_token.encode("utf-8")
+        token_id += 1
+
+    # 2. 添加所有单个字节token (0-255)
+    for byte_val in range(256):
+        if token_id >= vocab_size:
+            break
+        token_bytes = bytes([byte_val])
+        final_vocab[token_id] = token_bytes
+        token_id += 1
+
+    # 3. 收集所有出现过的token（从vocab的键中提取）
+    all_tokens = set()
+    for word in vocab.keys():
+        tokens = word.split(' ')
+        # 过滤掉 </w> 标记
+        tokens = [t for t in tokens if t != '</w>']
+        all_tokens.update(tokens)
+
+    # 4. 按照merges的顺序添加合并后的token
+    seen_merged_tokens = set()
+    for token1_str, token2_str in merges:
+        if token_id >= vocab_size:
+            break
+        # 合并后的token
+        merged_token_str = token1_str + token2_str
+        if merged_token_str not in seen_merged_tokens:
+            merged_token_bytes = token_str_to_bytes(merged_token_str)
+            if merged_token_bytes not in final_vocab.values():
+                final_vocab[token_id] = merged_token_bytes
+                token_id += 1
+                seen_merged_tokens.add(merged_token_str)
+
+    # 5. 添加其他在vocab中出现但还没添加的token
+    for token_str in sorted(all_tokens):
+        if token_id >= vocab_size:
+            break
+        token_bytes = token_str_to_bytes(token_str)
+        if token_bytes not in final_vocab.values():
+            final_vocab[token_id] = token_bytes
+            token_id += 1
+
+    # 转换merges为bytes格式
+    merges_bytes = []
+    for token1_str, token2_str in merges:
+        token1_bytes = token_str_to_bytes(token1_str)
+        token2_bytes = token_str_to_bytes(token2_str)
+        merges_bytes.append((token1_bytes, token2_bytes))
+
+    return final_vocab, merges_bytes
 
