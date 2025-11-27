@@ -5,13 +5,26 @@ from collections.abc import Iterable
 from typing import IO, Any, BinaryIO
 
 import re, collections
+import regex
 from tests.common import gpt2_bytes_to_unicode
 
 import numpy.typing as npt
 import torch
 from jaxtyping import Bool, Float, Int
 from torch import Tensor
-
+import os
+import heapq
+import regex
+import time
+import random
+import multiprocessing
+from functools import partial
+from tqdm import tqdm
+from pathlib import Path
+from typing import List, Tuple, Dict, DefaultDict, Any, Union
+import mmap
+import re
+from collections import defaultdict
 
 def run_linear(
     d_in: int,
@@ -599,34 +612,66 @@ def run_train_bpe(
 
     def token_str_to_bytes(token_str: str) -> bytes:
         """将 GPT-2 编码的字符串 token 转换为 bytes"""
-        return bytes([unicode_to_byte[char] for char in token_str])
+        try:
+            # 尝试使用 GPT-2 映射
+            return bytes([unicode_to_byte[char] for char in token_str])
+        except KeyError:
+            # 如果字符不在映射中，直接使用 UTF-8 编码
+            return token_str.encode("utf-8")
 
-    # 读取文本
-    # 按空格分词
+    # 读取文本并预处理（使用参考实现的简化方式）
     vocab = collections.defaultdict(int)
     try:
         with open(input_path, "r", encoding="utf-8", errors="ignore") as f:
-            # text = f.read() # 一次性读取文本内容, 文本内容量较少
-            for line in f:
-                words = line.strip().split()
-                for word in words:
-                    # vocab[word] += 1  这是词级，不符合bpe
-                    vocab[''.join(list(word))+ ' </w>']  +=  1 # 注意空格' </w>'，BPE要求
+            text = f.read()  # 读取整个文件
+        
+        # 使用正则表达式分割文本，保留空格（参考实现的方式）
+        PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
+        
+        # 先按特殊 token 分割
+        if special_tokens:
+            chunks = regex.split('|'.join(map(regex.escape, special_tokens)), text)
+        else:
+            chunks = [text]
+        
+        for chunk in chunks:
+            words = regex.findall(PAT, chunk)
+            
+            for word in words:
+                # 将单词编码为 UTF-8 字节
+                word_bytes = word.encode("utf-8")
+                # 将每个字节转换为一个单独的bytes对象，然后映射到 GPT-2 Unicode 字符
+                bytes_list = [bytes([x]) for x in word_bytes]
+                # 将每个byte映射到对应的Unicode字符
+                char_tokens = tuple([byte_to_unicode[b[0]] for b in bytes_list])
+                
+                vocab[char_tokens] += 1
+                
     except FileNotFoundError:
         raise FileNotFoundError(f"File not found: {input_path}")
-    
-    print("vocab: ", vocab)
+    # print("vocab: ", vocab)
 
     # 合并pairs
     def merge_vocab(pair, v_in):
         """将 pair 合并到词表 v_in 中"""
-        v_out = {}
-        bigram = re.escape(' '.join(pair))
-        p = re.compile(r'(?<!\S)' + bigram + r'(?!\S)')
-        for word in v_in:
-            w_out = p.sub(''.join(pair), word)
-            v_out[w_out] = v_in[word]
-        return v_out
+        v_out = collections.defaultdict(int)
+        pair_merged = pair[0] + pair[1]  # 合并为单个token
+        
+        for word, freq in v_in.items():
+            # word是tuple，需要找到pair并合并
+            new_word = []
+            i = 0
+            while i < len(word):
+                # 检查是否匹配pair
+                if i < len(word) - 1 and word[i] == pair[0] and word[i+1] == pair[1]:
+                    new_word.append(pair_merged)
+                    i += 2
+                else:
+                    new_word.append(word[i])
+                    i += 1
+            
+            v_out[tuple(new_word)] += freq
+        return dict(v_out)
 
     # BPE迭代合并 
     # 计算需要合并的次数：vocab_size - 初始token数(256字节 + 特殊token)
@@ -639,18 +684,26 @@ def run_train_bpe(
     for i in range(num_merges):
         pairs = collections.defaultdict(int)
         for word, freq in vocab.items():
-            symbols = word.split(' ')
-            for j in range(len(symbols)-1):  
-                if symbols[j] == '</w>' or symbols[j+1] == '</w>':
-                    continue
-                pairs[symbols[j], symbols[j+1]] += freq
+            # word现在是tuple of Unicode字符
+            for j in range(len(word)-1):
+                pairs[(word[j], word[j+1])] += freq
         if not pairs:
             print("No more pairs to merge!")
             break
-        # 找到最高频的 pair
-        best_pair = max(pairs, key=pairs.get)
+        # 找到最高频的 pair，处理频率相同的情况（选择字典序最大的）
+        max_count = max(pairs.values())
+        # 找出所有频率最高的对
+        candidates = [k for k, v in pairs.items() if v == max_count]
+        # 在候选者中，选择字典序最大的那个
+        # 注意：tiebreaking应该在原始bytes上进行，而不是remapped unicode
+        # 根据CHANGELOG，应该使用bytes比较，而不是Unicode字符串比较
+        # 文档示例中的max()是在Unicode字符串上比较，但CHANGELOG明确说应该在bytes上比较
+        best_pair = max(candidates, key=lambda x: (token_str_to_bytes(x[0]), token_str_to_bytes(x[1])))
+        
+        
         merges.append(best_pair)
         vocab = merge_vocab(best_pair, vocab)
+        
         '''
         print(f"Merged {best_pair} in step {i+1}")
         print("vocab: ", vocab)
@@ -661,7 +714,7 @@ def run_train_bpe(
         '''
 
     # 3. 最终结果
-    print("\nFinal vocab after BPE:")
+    
     # for word, freq in vocab.items():
         # print(f"{word}: {freq}")
 
@@ -685,10 +738,8 @@ def run_train_bpe(
     # 3. 收集所有出现过的token（从vocab的键中提取）
     all_tokens = set()
     for word in vocab.keys():
-        tokens = word.split(' ')
-        # 过滤掉 </w> 标记
-        tokens = [t for t in tokens if t != '</w>']
-        all_tokens.update(tokens)
+        # word现在是tuple
+        all_tokens.update(word)
 
     # 4. 按照merges的顺序添加合并后的token
     seen_merged_tokens = set()
