@@ -577,6 +577,96 @@ def get_tokenizer(
     """
     raise NotImplementedError
 
+# ========== 并行预分词辅助函数 ==========
+# 全局变量用于多进程
+_global_byte_to_unicode = None
+_global_PAT = None
+
+def init_worker(byte_to_unicode, PAT):
+    """在子进程启动时初始化全局变量，避免每次传递大字典"""
+    global _global_byte_to_unicode, _global_PAT
+    _global_byte_to_unicode = byte_to_unicode
+    _global_PAT = PAT
+
+def pre_tokenize_chunk_worker(chunk_text: str) -> dict:
+    """
+    工作函数：处理单个文本块
+    使用全局变量，避免每次传递大字典
+    """
+    global _global_byte_to_unicode, _global_PAT
+    
+    local_vocab = collections.defaultdict(int)
+    
+    # 对当前 chunk 进行预分词
+    words = regex.findall(_global_PAT, chunk_text)
+    
+    for word in words:
+        # 将单词编码为 UTF-8 字节
+        word_bytes = word.encode("utf-8")
+        # 将每个字节转换为一个单独的bytes对象
+        bytes_list = [bytes([x]) for x in word_bytes]
+        # 将每个byte映射到对应的Unicode字符
+        char_tokens = tuple([_global_byte_to_unicode[b[0]] for b in bytes_list])
+        local_vocab[char_tokens] += 1
+    
+    # 返回普通 dict（multiprocessing 会自动序列化）
+    return dict(local_vocab)
+
+def parallel_pre_tokenize(input_path, special_tokens, byte_to_unicode, num_workers=4):
+    """
+    并行预分词 - 使用参考代码的优化技巧
+    """
+    PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
+    
+    # 读取整个文件
+    try:
+        with open(input_path, "r", encoding="utf-8", errors="ignore") as f:
+            text = f.read()
+    except FileNotFoundError:
+        raise FileNotFoundError(f"File not found: {input_path}")
+    
+    # 按 special tokens 分割成 chunks
+    if special_tokens:
+        chunks = regex.split('|'.join(map(regex.escape, special_tokens)), text)
+    else:
+        chunks = [text]
+    
+    # 过滤空 chunk
+    chunks = [chunk for chunk in chunks if chunk.strip()]
+    
+    # 如果只有一个 worker 或 chunk 太少，使用串行版本
+    if num_workers <= 1 or len(chunks) < num_workers:
+        vocab = collections.defaultdict(int)
+        for chunk in chunks:
+            words = regex.findall(PAT, chunk)
+            for word in words:
+                word_bytes = word.encode("utf-8")
+                bytes_list = [bytes([x]) for x in word_bytes]
+                char_tokens = tuple([byte_to_unicode[b[0]] for b in bytes_list])
+                vocab[char_tokens] += 1
+        return vocab
+    
+    # 使用进程池并行处理
+    with multiprocessing.Pool(
+        num_workers,
+        initializer=init_worker,  # 子进程启动时调用
+        initargs=(byte_to_unicode, PAT)  # 传递给 init_worker 的参数
+    ) as pool:
+        # 使用 imap 流式处理，chunksize 批量处理减少通信开销
+        chunksize = max(1, len(chunks) // (num_workers * 4))  # 动态 chunksize
+        chunk_vocabs = list(pool.imap(
+            pre_tokenize_chunk_worker, 
+            chunks, 
+            chunksize=chunksize
+        ))
+    
+    # 合并所有 chunk 的结果
+    vocab = collections.defaultdict(int)
+    for chunk_vocab in chunk_vocabs:
+        for token, freq in chunk_vocab.items():
+            vocab[token] += freq
+    
+    return vocab
 
 def run_train_bpe(
     input_path: str | os.PathLike,
@@ -619,90 +709,118 @@ def run_train_bpe(
             # 如果字符不在映射中，直接使用 UTF-8 编码
             return token_str.encode("utf-8")
 
-    # 读取文本并预处理（使用参考实现的简化方式）
-    vocab = collections.defaultdict(int)
+    # 根据文件大小决定是否使用并行
     try:
-        with open(input_path, "r", encoding="utf-8", errors="ignore") as f:
-            text = f.read()  # 读取整个文件
-        
-        # 使用正则表达式分割文本，保留空格（参考实现的方式）
-        PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
-        
-        # 先按特殊 token 分割
-        if special_tokens:
-            chunks = regex.split('|'.join(map(regex.escape, special_tokens)), text)
-        else:
-            chunks = [text]
-        
-        for chunk in chunks:
-            words = regex.findall(PAT, chunk)
+        file_size = os.path.getsize(input_path)
+    except OSError:
+        file_size = 0
+    
+    use_parallel = file_size > 1 * 1024 * 1024  # 大于 1MB 才并行
+    
+    if use_parallel:
+        num_workers = min(os.cpu_count() or 1, 4)  # 最多 4 个进程
+        vocab = parallel_pre_tokenize(
+            input_path=input_path,
+            special_tokens=special_tokens,
+            byte_to_unicode=byte_to_unicode,
+            num_workers=num_workers
+        )
+    else:
+        # 小文件用串行版本（保持原来的逻辑）
+        vocab = collections.defaultdict(int)
+        try:
+            with open(input_path, "r", encoding="utf-8", errors="ignore") as f:
+                text = f.read()
             
-            for word in words:
-                # 将单词编码为 UTF-8 字节
-                word_bytes = word.encode("utf-8")
-                # 将每个字节转换为一个单独的bytes对象，然后映射到 GPT-2 Unicode 字符
-                bytes_list = [bytes([x]) for x in word_bytes]
-                # 将每个byte映射到对应的Unicode字符
-                char_tokens = tuple([byte_to_unicode[b[0]] for b in bytes_list])
-                
-                vocab[char_tokens] += 1
-                
-    except FileNotFoundError:
-        raise FileNotFoundError(f"File not found: {input_path}")
-    # print("vocab: ", vocab)
-
-    # 合并pairs
-    def merge_vocab(pair, v_in):
-        """将 pair 合并到词表 v_in 中"""
-        v_out = collections.defaultdict(int)
-        pair_merged = pair[0] + pair[1]  # 合并为单个token
-        
-        for word, freq in v_in.items():
-            # word是tuple，需要找到pair并合并
-            new_word = []
-            i = 0
-            while i < len(word):
-                # 检查是否匹配pair
-                if i < len(word) - 1 and word[i] == pair[0] and word[i+1] == pair[1]:
-                    new_word.append(pair_merged)
-                    i += 2
-                else:
-                    new_word.append(word[i])
-                    i += 1
+            PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
             
-            v_out[tuple(new_word)] += freq
-        return dict(v_out)
+            if special_tokens:
+                chunks = regex.split('|'.join(map(regex.escape, special_tokens)), text)
+            else:
+                chunks = [text]
+            
+            for chunk in chunks:
+                words = regex.findall(PAT, chunk)
+                for word in words:
+                    word_bytes = word.encode("utf-8")
+                    bytes_list = [bytes([x]) for x in word_bytes]
+                    char_tokens = tuple([byte_to_unicode[b[0]] for b in bytes_list])
+                    vocab[char_tokens] += 1
+                    
+        except FileNotFoundError:
+            raise FileNotFoundError(f"File not found: {input_path}")
 
-    # BPE迭代合并 
+    # BPE迭代合并 - 使用增量更新优化
     # 计算需要合并的次数：vocab_size - 初始token数(256字节 + 特殊token)
     initial_vocab_size = 256 + len(special_tokens)
     num_merges = vocab_size - initial_vocab_size
     if num_merges <= 0:
         num_merges = 0
     
-    merges = []  # 在循环外初始化
+    # 初始化 pair_counts（只计算一次）
+    pair_counts = collections.defaultdict(int)
+    for word, freq in vocab.items():
+        for j in range(len(word) - 1):
+            pair = (word[j], word[j+1])
+            pair_counts[pair] += freq
+    
+    merges = []
     for i in range(num_merges):
-        pairs = collections.defaultdict(int)
-        for word, freq in vocab.items():
-            # word现在是tuple of Unicode字符
-            for j in range(len(word)-1):
-                pairs[(word[j], word[j+1])] += freq
-        if not pairs:
-            print("No more pairs to merge!")
+        if not pair_counts:
             break
-        # 找到最高频的 pair，处理频率相同的情况（选择字典序最大的）
-        max_count = max(pairs.values())
-        # 找出所有频率最高的对
-        candidates = [k for k, v in pairs.items() if v == max_count]
-        # 在候选者中，选择字典序最大的那个
-        # 注意：tiebreaking应该在原始bytes上进行，而不是remapped unicode
-        # 根据CHANGELOG，应该使用bytes比较，而不是Unicode字符串比较
-        # 文档示例中的max()是在Unicode字符串上比较，但CHANGELOG明确说应该在bytes上比较
+        
+        # 找到最高频的 pair
+        max_count = max(pair_counts.values())
+        candidates = [k for k, v in pair_counts.items() if v == max_count]
         best_pair = max(candidates, key=lambda x: (token_str_to_bytes(x[0]), token_str_to_bytes(x[1])))
         
-        
         merges.append(best_pair)
-        vocab = merge_vocab(best_pair, vocab)
+        
+        # 增量更新：只更新受影响的 pairs
+        pair_merged = best_pair[0] + best_pair[1]
+        
+        # 找出所有包含 best_pair 的 word，并合并它们
+        words_to_update = []
+        for word, freq in list(vocab.items()):
+            # 检查 word 是否包含 best_pair
+            has_pair = False
+            for j in range(len(word) - 1):
+                if word[j] == best_pair[0] and word[j+1] == best_pair[1]:
+                    has_pair = True
+                    break
+            
+            if has_pair:
+                words_to_update.append((word, freq))
+        
+        # 对每个受影响的 word 进行合并
+        for word, freq in words_to_update:
+            # 1. 先减去旧 pairs 的计数
+            for j in range(len(word) - 1):
+                old_pair = (word[j], word[j+1])
+                pair_counts[old_pair] -= freq
+                if pair_counts[old_pair] <= 0:
+                    del pair_counts[old_pair]
+            
+            # 2. 合并 word
+            new_word = []
+            j = 0
+            while j < len(word):
+                if j < len(word) - 1 and word[j] == best_pair[0] and word[j+1] == best_pair[1]:
+                    new_word.append(pair_merged)
+                    j += 2
+                else:
+                    new_word.append(word[j])
+                    j += 1
+            
+            # 3. 删除旧的 word，添加新的 word（累加频率）
+            del vocab[word]
+            new_word_tuple = tuple(new_word)
+            vocab[new_word_tuple] = vocab.get(new_word_tuple, 0) + freq
+            
+            # 4. 加上新 pairs 的计数
+            for j in range(len(new_word_tuple) - 1):
+                new_pair = (new_word_tuple[j], new_word_tuple[j+1])
+                pair_counts[new_pair] += freq
         
         '''
         print(f"Merged {best_pair} in step {i+1}")
