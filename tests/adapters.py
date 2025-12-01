@@ -575,7 +575,9 @@ def get_tokenizer(
     Returns:
         A BPE tokenizer that uses the provided vocab, merges, and special tokens.
     """
-    raise NotImplementedError
+    from tests.hw2.tokenizer_encode_decode import Tokenizer
+    
+    return Tokenizer(vocab, merges, special_tokens)
 
 # ========== 并行预分词辅助函数 ==========
 # 全局变量用于多进程
