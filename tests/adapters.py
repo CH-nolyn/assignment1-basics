@@ -44,8 +44,23 @@ def run_linear(
     Returns:
         Float[Tensor, "... d_out"]: The transformed output of your linear module.
     """
-
-    raise NotImplementedError
+    from cs336_basics import Linear
+    
+    # 创建 Linear 模块实例
+    linear = Linear(
+        in_features=d_in,
+        out_features=d_out,
+        device=weights.device,
+        dtype=weights.dtype
+    )
+    
+    # 加载权重（直接赋值，因为权重形状已经是 (d_out, d_in)）
+    linear.W.data = weights
+    
+    # 执行前向传播
+    output = linear(in_features)
+    
+    return output
 
 
 def run_embedding(
@@ -66,8 +81,23 @@ def run_embedding(
     Returns:
         Float[Tensor, "... d_model"]: Batch of embeddings returned by your Embedding layer.
     """
-
-    raise NotImplementedError
+    from cs336_basics import Embedding
+    
+    # 创建 Embedding 模块实例
+    embedding = Embedding(
+        num_embeddings=vocab_size,
+        embedding_dim=d_model,
+        device=weights.device,
+        dtype=weights.dtype
+    )
+    
+    # 加载权重（直接赋值，因为权重形状已经是 (vocab_size, d_model)）
+    embedding.embedding.data = weights
+    
+    # 执行前向传播
+    output = embedding(token_ids)
+    
+    return output
 
 
 def run_swiglu(
