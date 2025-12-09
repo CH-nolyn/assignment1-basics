@@ -44,7 +44,7 @@ def run_linear(
     Returns:
         Float[Tensor, "... d_out"]: The transformed output of your linear module.
     """
-    from cs336_basics import Linear
+    from tests.hw3.linear import Linear
     
     # 创建 Linear 模块实例
     linear = Linear(
@@ -81,7 +81,7 @@ def run_embedding(
     Returns:
         Float[Tensor, "... d_model"]: Batch of embeddings returned by your Embedding layer.
     """
-    from cs336_basics import Embedding
+    from tests.hw3.embedding import Embedding
     
     # 创建 Embedding 模块实例
     embedding = Embedding(
@@ -122,14 +122,15 @@ def run_swiglu(
     Returns:
         Float[Tensor, "... d_model"]: Output embeddings of the same shape as the input embeddings.
     """
-    # Example:
-    # If your state dict keys match, you can use `load_state_dict()`
-    # swiglu.load_state_dict(weights)
-    # You can also manually assign the weights
-    # swiglu.w1.weight.data = w1_weight
-    # swiglu.w2.weight.data = w2_weight
-    # swiglu.w3.weight.data = w3_weight
-    raise NotImplementedError
+    from tests.hw3.swiglu import swiglu
+
+    # 直接调用函数形式的实现，权重已经按 (d_ff, d_model)/(d_model, d_ff) 排列
+    return swiglu(
+        x=in_features,
+        w1=w1_weight,
+        w2=w2_weight,
+        w3=w3_weight,
+    )
 
 
 def run_scaled_dot_product_attention(
@@ -424,7 +425,23 @@ def run_rmsnorm(
         Float[Tensor,"... d_model"]: Tensor of with the same shape as `in_features` with the output of running
         RMSNorm of the `in_features`.
     """
-    raise NotImplementedError
+    from tests.hw3.rmsnorm import RMSNorm
+    
+    # 创建 RMSNorm 模块实例
+    rmsnorm = RMSNorm(
+        d_model=d_model,
+        eps=eps,
+        device=weights.device,
+        dtype=weights.dtype
+    )
+    
+    # 加载权重（直接赋值，因为权重形状已经是 (d_model,)）
+    rmsnorm.g.data = weights
+    
+    # 执行前向传播
+    output = rmsnorm(in_features)
+    
+    return output
 
 
 def run_silu(in_features: Float[Tensor, " ..."]) -> Float[Tensor, " ..."]:
@@ -438,7 +455,9 @@ def run_silu(in_features: Float[Tensor, " ..."]) -> Float[Tensor, " ..."]:
         Float[Tensor,"..."]: of with the same shape as `in_features` with the output of applying
         SiLU to each element.
     """
-    raise NotImplementedError
+    from tests.hw3.swiglu import silu
+
+    return silu(in_features)
 
 
 def run_get_batch(

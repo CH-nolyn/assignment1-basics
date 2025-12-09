@@ -8,5 +8,6 @@ except importlib.metadata.PackageNotFoundError:
 
 from cs336_basics.linear import Linear
 from cs336_basics.embedding import Embedding
+from cs336_basics.rmsnorm import RMSNorm
 
-__all__ = ["Linear", "Embedding"]
+__all__ = ["Linear", "Embedding", "RMSNorm"]
