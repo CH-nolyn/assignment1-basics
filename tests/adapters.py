@@ -247,7 +247,20 @@ def run_rope(
     Returns:
         Float[Tensor, " ... sequence_length d_k"]: Tensor with RoPEd input.
     """
-    raise NotImplementedError
+    from tests.hw3.rope import RotaryPositionalEmbedding
+    
+    # 创建 RoPE 模块实例
+    rope = RotaryPositionalEmbedding(
+        theta=theta,
+        d_k=d_k,
+        max_seq_len=max_seq_len,
+        device=in_query_or_key.device
+    )
+    
+    # 执行前向传播
+    output = rope(in_query_or_key, token_positions)
+    
+    return output
 
 
 def run_transformer_block(
