@@ -201,7 +201,45 @@ def run_multihead_self_attention(
         Float[Tensor, " ... sequence_length d_out"]: Tensor with the output of running your optimized, batched multi-headed attention
         implementation with the given QKV projection weights and input features.
     """
-    raise NotImplementedError
+    import math
+    from tests.adapters import run_scaled_dot_product_attention  # reuse tested SDPA
+
+    # 1) 基本维度
+    *batch_dims, seq_len, _ = in_features.shape
+    d_k = q_proj_weight.shape[0]  # = d_model // num_heads
+    d_v = v_proj_weight.shape[0]  # = d_model // num_heads
+
+    # 2) 一次性计算 Q,K,V 投影（线性，无 bias）
+    Q = torch.matmul(in_features, q_proj_weight.transpose(0, 1))  # (..., seq_len, d_k)
+    K = torch.matmul(in_features, k_proj_weight.transpose(0, 1))
+    V = torch.matmul(in_features, v_proj_weight.transpose(0, 1))  # (..., seq_len, d_v)
+
+    # 3) 重排为多头: (..., num_heads, seq_len, head_dim)
+    def split_heads(x, head_dim):
+        x = x.view(*batch_dims, seq_len, num_heads, head_dim)
+        return x.transpose(-3, -2)  # (..., num_heads, seq_len, head_dim)
+
+    Q = split_heads(Q, d_k // num_heads) if d_k == d_model else split_heads(Q, d_k // num_heads)
+    K = split_heads(K, d_k // num_heads) if d_k == d_model else split_heads(K, d_k // num_heads)
+    V = split_heads(V, d_v // num_heads) if d_v == d_model else split_heads(V, d_v // num_heads)
+
+    # 这里 d_k = d_v = d_model / num_heads，直接用
+    head_dim = d_model // num_heads
+
+    # 4) 构造因果掩码 (seq_len, seq_len) 并广播
+    causal_mask = torch.tril(torch.ones(seq_len, seq_len, device=in_features.device, dtype=torch.bool))
+
+    # 5) 计算注意力：把 head 维度当 batch 维度
+    attn_out = run_scaled_dot_product_attention(Q, K, V, mask=causal_mask)
+    # attn_out: (..., num_heads, seq_len, head_dim)
+
+    # 6) 合并多头: (..., seq_len, num_heads*head_dim) = (..., seq_len, d_model)
+    attn_out = attn_out.transpose(-3, -2).contiguous()  # (..., seq_len, num_heads, head_dim)
+    attn_out = attn_out.view(*batch_dims, seq_len, d_model)
+
+    # 7) 输出投影
+    out = torch.matmul(attn_out, o_proj_weight.transpose(0, 1))  # (..., seq_len, d_model)
+    return out
 
 
 def run_multihead_self_attention_with_rope(
@@ -241,7 +279,48 @@ def run_multihead_self_attention_with_rope(
         Float[Tensor, " ... sequence_length d_out"]: Tensor with the output of running your optimized, batched multi-headed attention
         implementation with the given QKV projection weights and input features.
     """
-    raise NotImplementedError
+    import math
+    from tests.hw3.rope import RotaryPositionalEmbedding
+    from tests.adapters import run_scaled_dot_product_attention  # reuse tested SDPA
+
+    *batch_dims, seq_len, _ = in_features.shape
+    head_dim = d_model // num_heads
+
+    # 1) Q,K,V 投影
+    Q = torch.matmul(in_features, q_proj_weight.transpose(0, 1))  # (..., seq_len, d_model)
+    K = torch.matmul(in_features, k_proj_weight.transpose(0, 1))
+    V = torch.matmul(in_features, v_proj_weight.transpose(0, 1))
+
+    # 2) 重排为多头: (..., num_heads, seq_len, head_dim)
+    def split_heads(x):
+        x = x.view(*batch_dims, seq_len, num_heads, head_dim)
+        return x.transpose(-3, -2)  # (..., num_heads, seq_len, head_dim)
+
+    Q = split_heads(Q)
+    K = split_heads(K)
+    V = split_heads(V)
+
+    # 3) 应用 RoPE 到 Q, K（head 维度当 batch 维度）
+    if token_positions is None:
+        token_positions = torch.arange(seq_len, device=in_features.device).unsqueeze(0)
+    rope = RotaryPositionalEmbedding(theta=theta, d_k=head_dim, max_seq_len=max_seq_len, device=in_features.device)
+    Q = rope(Q, token_positions)
+    K = rope(K, token_positions)
+
+    # 4) 因果掩码
+    causal_mask = torch.tril(torch.ones(seq_len, seq_len, device=in_features.device, dtype=torch.bool))
+
+    # 5) 注意力
+    attn_out = run_scaled_dot_product_attention(Q, K, V, mask=causal_mask)
+    # (..., num_heads, seq_len, head_dim)
+
+    # 6) 合并头
+    attn_out = attn_out.transpose(-3, -2).contiguous()  # (..., seq_len, num_heads, head_dim)
+    attn_out = attn_out.view(*batch_dims, seq_len, d_model)
+
+    # 7) 输出投影
+    out = torch.matmul(attn_out, o_proj_weight.transpose(0, 1))  # (..., seq_len, d_model)
+    return out
 
 
 def run_rope(
