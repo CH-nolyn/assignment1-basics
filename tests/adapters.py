@@ -151,7 +151,23 @@ def run_scaled_dot_product_attention(
     Returns:
         Float[Tensor, " ... queries d_v"]: Output of SDPA
     """
-    raise NotImplementedError
+    import math
+
+    # 1) 打分: Q K^T / sqrt(d_k)
+    d_k = Q.shape[-1]
+    scores = torch.matmul(Q, K.transpose(-1, -2)) / math.sqrt(d_k)  # (..., queries, keys)
+
+    # 2) 掩码: False 位置置为 -inf，True 保留
+    if mask is not None:
+        scores = scores.masked_fill(~mask, float("-inf"))
+
+    # 3) softmax
+    attn = torch.softmax(scores, dim=-1)  # (..., queries, keys)
+
+    # 4) 权重求和
+    output = torch.matmul(attn, V)  # (..., queries, d_v)
+
+    return output
 
 
 def run_multihead_self_attention(
@@ -509,7 +525,18 @@ def run_softmax(in_features: Float[Tensor, " ..."], dim: int) -> Float[Tensor, "
         Float[Tensor, "..."]: Tensor of with the same shape as `in_features` with the output of
         softmax normalizing the specified `dim`.
     """
-    raise NotImplementedError
+    # raise NotImplementedError
+    # 减去维度的最大值，避免exp溢出
+    x_max, _ = torch.max(in_features, dim=dim, keepdim=True)
+    x_shifted = in_features - x_max
+
+    exp_x = torch.exp(x_shifted)
+
+    exp_x_sum = torch.sum(exp_x, dim=dim, keepdim=True)
+    out = exp_x / exp_x_sum
+    # 测试溢出场景：x + 100，仍应与 expected 相同（减最大值技巧起作用
+    return out
+
 
 
 def run_cross_entropy(
