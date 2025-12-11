@@ -428,7 +428,49 @@ def run_transformer_block(
         Float[Tensor, "batch sequence_length d_model"] Tensor with the output of
         running the Transformer block on the input features while using RoPE.
     """
-    raise NotImplementedError
+    from tests.hw3.transformer_block import TransformerBlock
+    
+    # 创建 TransformerBlock 实例
+    block = TransformerBlock(
+        d_model=d_model,
+        num_heads=num_heads,
+        d_ff=d_ff,
+        max_seq_len=max_seq_len,
+        theta=theta,
+    )
+    
+    # 将模型移动到输入张量的设备
+    device = in_features.device
+    block = block.to(device)
+    
+    # 加载 RMSNorm 的权重
+    block.ln1.g.data = weights["ln1.weight"].to(device)
+    block.ln2.g.data = weights["ln2.weight"].to(device)
+    
+    # 提取 attention 和 FFN 的权重
+    attn_q_proj_weight = weights["attn.q_proj.weight"].to(device)
+    attn_k_proj_weight = weights["attn.k_proj.weight"].to(device)
+    attn_v_proj_weight = weights["attn.v_proj.weight"].to(device)
+    attn_output_proj_weight = weights["attn.output_proj.weight"].to(device)
+    
+    ffn_w1_weight = weights["ffn.w1.weight"].to(device)
+    ffn_w2_weight = weights["ffn.w2.weight"].to(device)
+    ffn_w3_weight = weights["ffn.w3.weight"].to(device)
+    
+    # 运行前向传播
+    with torch.no_grad():
+        output = block(
+            in_features,
+            attn_q_proj_weight=attn_q_proj_weight,
+            attn_k_proj_weight=attn_k_proj_weight,
+            attn_v_proj_weight=attn_v_proj_weight,
+            attn_output_proj_weight=attn_output_proj_weight,
+            ffn_w1_weight=ffn_w1_weight,
+            ffn_w2_weight=ffn_w2_weight,
+            ffn_w3_weight=ffn_w3_weight,
+        )
+    
+    return output
 
 
 def run_transformer_lm(
