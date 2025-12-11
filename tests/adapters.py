@@ -675,7 +675,25 @@ def run_cross_entropy(
     Returns:
         Float[Tensor, ""]: The average cross-entropy loss across examples.
     """
-    raise NotImplementedError
+    # 支持任意批量维度：将所有批维合并为一维
+    vocab_size = inputs.shape[-1]
+    logits = inputs.reshape(-1, vocab_size)
+    tgt = targets.reshape(-1)
+
+    # 1) 数值稳定：减去每个样本的最大 logit
+    shifted = logits - logits.max(dim=-1, keepdim=True).values
+
+    # 2) logsumexp 计算分母的 log
+    logsumexp = torch.logsumexp(shifted, dim=-1)  # (batch*,)
+
+    # 3) 取出对应目标类的 logit
+    target_logit = shifted.gather(1, tgt.unsqueeze(1)).squeeze(1)  # (batch*,)
+
+    # 4) 交叉熵：-log softmax = logsumexp - target_logit
+    loss = logsumexp - target_logit  # (batch*,)
+
+    # 5) 返回批次平均
+    return loss.mean()
 
 
 def run_gradient_clipping(parameters: Iterable[torch.nn.Parameter], max_l2_norm: float) -> None:
